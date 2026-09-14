@@ -21,6 +21,49 @@
         .file-actions button:hover { border-color: #4fc3f7; background: #1a4080; }
         .file-actions button.danger { border-color: #7f3540; background: #4a1820; color: #ffd7dc; }
         .file-actions button.danger:hover { border-color: #ff6677; background: #6b202c; }
+
+        .routing-mode-panel {
+            margin-top: 2px;
+            padding: 8px;
+            border: 1px solid #263653;
+            border-radius: 7px;
+            background: #111b30;
+        }
+        .routing-mode-title {
+            font-size: 11px;
+            color: #94a3b8;
+            margin-bottom: 6px;
+        }
+        .routing-mode-buttons {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 5px;
+        }
+        .routing-mode-btn {
+            border: 1px solid #35567f;
+            border-radius: 5px;
+            background: #0f3460;
+            color: #dbeafe;
+            padding: 6px 4px;
+            font-size: 11px;
+            cursor: pointer;
+        }
+        .routing-mode-btn:hover {
+            border-color: #4fc3f7;
+        }
+        .routing-mode-btn.active {
+            border-color: #4fc3f7;
+            background: #1a4080;
+            color: #ffffff;
+            box-shadow: inset 0 0 0 1px rgba(79,195,247,.18);
+        }
+        .routing-mode-hint {
+            margin-top: 6px;
+            font-size: 10px;
+            line-height: 1.4;
+            color: #64748b;
+        }
+
         .palette-category {
             color: #64748b; font-size: 11px; padding: 7px 4px 2px;
             border-bottom: 1px solid #263653; margin-top: 2px;
@@ -50,8 +93,8 @@
         .pin { fill: #334155; stroke: #64748b; stroke-width: 1.5; cursor: crosshair; }
         .pin:hover { fill: #4fc3f7; stroke: #4fc3f7; }
 
-        .wire { stroke: #4fc3f7; stroke-width: 2; fill: none; }
-        .wire-temp { stroke: #4fc3f7; stroke-width: 1.5; stroke-dasharray: 6 3; fill: none; pointer-events: none; }
+        .wire { stroke: #4fc3f7; stroke-width: 2; fill: none; stroke-linejoin: round; stroke-linecap: round; }
+        .wire-temp { stroke: #4fc3f7; stroke-width: 1.5; stroke-dasharray: 6 3; fill: none; pointer-events: none; stroke-linejoin: round; stroke-linecap: round; }
 
         #status-bar {
             position: absolute; bottom: 0; left: 0; right: 0;
@@ -62,6 +105,8 @@
         /* 已连接线：透明粗命中区域，实际显示仍保持细线 */
         .wire-hit {
             stroke: transparent;
+            stroke-linejoin: round;
+            stroke-linecap: round;
             stroke-width: 14px;
             fill: none;
             pointer-events: stroke;
@@ -233,6 +278,14 @@
             <button id="clear-canvas" type="button" class="danger">清空画布</button>
             <input id="json-file-input" type="file" accept=".json,application/json" hidden>
         </div>
+        <div class="routing-mode-panel">
+            <div class="routing-mode-title">连线模式</div>
+            <div class="routing-mode-buttons">
+                <button id="routing-mode-normal" type="button" class="routing-mode-btn active">普通</button>
+                <button id="routing-mode-auto" type="button" class="routing-mode-btn">自动布线</button>
+            </div>
+            <div id="routing-mode-hint" class="routing-mode-hint">普通：与稳定版一致，直接连接两端</div>
+        </div>
     </div>
 
     <div class="palette-category">基本电气</div>
@@ -338,6 +391,9 @@
     let wiringState = null;
     let selectedType = null;
     let selectedId = null;
+
+    // normal = 稳定版直线连线；auto = 当前正交自动布线算法
+    let routingMode = 'normal';
 
 
     // ========== 元件定义 ==========
@@ -653,21 +709,63 @@
         updateWires();
     }
 
-    // 鼠标移动时显示临时连线
+    // 鼠标移动时显示临时连线。
+    // 普通模式与稳定版一致：直接使用 SVG line。
+    // 自动布线模式：显示横平竖直的预览路径。
     function updateTempWire(mouseX, mouseY) {
         if (!wiringState) return;
 
-        let line = tempWireLayer.select('.wire-temp');
-        if (line.empty()) {
-            line = tempWireLayer.append('line')
-                .attr('class', 'wire-temp');
+        tempWireLayer.selectAll('*').remove();
+
+        const start = {
+            x: wiringState.fromX,
+            y: wiringState.fromY
+        };
+
+        if (routingMode === 'normal') {
+            tempWireLayer.append('line')
+                .attr('class', 'wire-temp')
+                .attr('x1', start.x)
+                .attr('y1', start.y)
+                .attr('x2', mouseX)
+                .attr('y2', mouseY);
+            return;
         }
 
-        line
-            .attr('x1', wiringState.fromX)
-            .attr('y1', wiringState.fromY)
-            .attr('x2', mouseX)
-            .attr('y2', mouseY);
+        const fromComp = components.find(c => c.id === wiringState.fromCompId);
+        const fromDef = fromComp && COMPONENT_DEFS[fromComp.type];
+        const fromPin = fromDef && fromDef.pins[wiringState.fromPinIndex];
+        if (!fromComp || !fromPin) return;
+
+        const side = getPinSide(fromPin);
+        const dir = getDirection(side);
+        const escape = 20;
+        const s = {
+            x: start.x + dir.x * escape,
+            y: start.y + dir.y * escape
+        };
+
+        const horizontalFirst = [
+            start, s,
+            { x: mouseX, y: s.y },
+            { x: mouseX, y: mouseY }
+        ];
+        const verticalFirst = [
+            start, s,
+            { x: s.x, y: mouseY },
+            { x: mouseX, y: mouseY }
+        ];
+        const h = simplifyOrthogonalPoints(horizontalFirst);
+        const v = simplifyOrthogonalPoints(verticalFirst);
+        const hLen = h.reduce((sum, p, i) =>
+            i ? sum + manhattan(h[i - 1], p) : 0, 0);
+        const vLen = v.reduce((sum, p, i) =>
+            i ? sum + manhattan(v[i - 1], p) : 0, 0);
+        const points = hLen <= vLen ? h : v;
+
+        tempWireLayer.append('path')
+            .attr('class', 'wire-temp')
+            .attr('d', orthogonalPath(points));
     }
 
     // 统一的取消连线函数
@@ -677,6 +775,464 @@
         d3.selectAll('.pin.active')
             .classed('active', false)
             .attr('fill', null);
+    }
+
+    // ========== 通用正交自动布线算法 ==========
+    // 核心思想：不针对“左端点 / 右端点 / 某一种元件”写特殊路线。
+    // 每个引脚只有一个通用属性：它相对于元件本体的“禁止进入方向”。
+    // 路由器在由元件障碍物组成的正交网格上寻找最短、少拐弯的路径。
+    //
+    // 对任意端点都遵守同一套规则：
+    //   1. 线路绝不穿过元件本体。
+    //   2. 从引脚出发可以向外，也可以立即向任意垂直方向转弯；绝不能向元件内部走。
+    //   3. 到达引脚时同理：可以从外侧进入，也可以从垂直方向进入；绝不能从元件内部穿出来。
+    //   4. 全部路径只有水平 / 垂直线段。
+    //   5. 在满足以上约束后，优先少拐弯，再优先总长度短。
+
+    function getPinSide(pin) {
+        // 引脚定义本身决定其所在的边。中心附近的引脚默认归到竖直方向。
+        if (Math.abs(pin.x) >= Math.abs(pin.y)) {
+            return pin.x < 0 ? 'left' : 'right';
+        }
+        return pin.y < 0 ? 'top' : 'bottom';
+    }
+
+    function getDirection(side) {
+        return {
+            left:   { x: -1, y: 0 },
+            right:  { x: 1,  y: 0 },
+            top:    { x: 0,  y: -1 },
+            bottom: { x: 0, y: 1 }
+        }[side];
+    }
+
+    function manhattan(a, b) {
+        return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+    }
+
+    function simplifyOrthogonalPoints(points) {
+        const result = [];
+        for (const p of points) {
+            const q = { x: Math.round(p.x), y: Math.round(p.y) };
+            const last = result[result.length - 1];
+            if (last && last.x === q.x && last.y === q.y) continue;
+            result.push(q);
+        }
+
+        let changed = true;
+        while (changed && result.length >= 3) {
+            changed = false;
+            for (let i = 1; i < result.length - 1; i++) {
+                const a = result[i - 1], b = result[i], c = result[i + 1];
+                if ((a.x === b.x && b.x === c.x) || (a.y === b.y && b.y === c.y)) {
+                    result.splice(i, 1);
+                    changed = true;
+                    break;
+                }
+            }
+        }
+        return result;
+    }
+
+    // 统一的元件障碍框。
+    // 直接读取该元件实际绘制出来的 SVG 图形边界，不再使用固定的大障碍框。
+    // 因此不同尺寸的元件都由同一套几何规则处理。
+    function getComponentObstacle(comp, padding = 8) {
+        const node = componentLayer
+            .select(`.component[data-id="${comp.id}"]`)
+            .node();
+
+        // 采用“端口感知的障碍物膨胀”，思路来自成熟的 Manhattan / obstacle-avoiding
+        // router：障碍物需要留安全间距，但端口所在的一侧不能把引脚本身也膨胀成障碍。
+        // 这是本项目之前所有异常布线的关键问题：R/C 的 component-body 包含了
+        // “引脚 -> 本体”的引线，直接对整个 bbox 加 padding 会把真实引脚放进障碍物内部。
+        if (node) {
+            const shapes = node.querySelectorAll('path, line, rect, polygon, polyline, circle');
+            let bounds = null;
+
+            shapes.forEach(shape => {
+                if (shape.classList.contains('pin') || shape.classList.contains('selection-frame')) return;
+                let b;
+                try { b = shape.getBBox(); } catch (_) { return; }
+                if (!b || !Number.isFinite(b.x) || !Number.isFinite(b.y) ||
+                    !Number.isFinite(b.width) || !Number.isFinite(b.height)) return;
+
+                const item = {
+                    minX: b.x, maxX: b.x + b.width,
+                    minY: b.y, maxY: b.y + b.height
+                };
+                if (!bounds) bounds = item;
+                else {
+                    bounds.minX = Math.min(bounds.minX, item.minX);
+                    bounds.maxX = Math.max(bounds.maxX, item.maxX);
+                    bounds.minY = Math.min(bounds.minY, item.minY);
+                    bounds.maxY = Math.max(bounds.maxY, item.maxY);
+                }
+            });
+
+            if (bounds) {
+                const pins = COMPONENT_DEFS[comp.type]?.pins || [];
+                const eps = 2;
+                const hasLeftPort = pins.some(p => p.x <= bounds.minX + eps);
+                const hasRightPort = pins.some(p => p.x >= bounds.maxX - eps);
+                const hasTopPort = pins.some(p => p.y <= bounds.minY + eps);
+                const hasBottomPort = pins.some(p => p.y >= bounds.maxY - eps);
+
+                // 有端口的一侧不做 padding；其它三侧保留安全距离。
+                // 对“引线已经伸到端口”的 R/C，这会让引脚落在障碍边界外；
+                // 对 gate/box 等“端口在本体外”的元件，同样自然成立。
+                return {
+                    minX: comp.x + bounds.minX - (hasLeftPort ? 0 : padding),
+                    maxX: comp.x + bounds.maxX + (hasRightPort ? 0 : padding),
+                    minY: comp.y + bounds.minY - (hasTopPort ? 0 : padding),
+                    maxY: comp.y + bounds.maxY + (hasBottomPort ? 0 : padding)
+                };
+            }
+        }
+
+        // DOM 尚未完成渲染时的通用后备框。
+        // 同样按照端口所在侧不加 padding，避免把起止端点包进障碍。
+        const pins = COMPONENT_DEFS[comp.type]?.pins || [];
+        const halfW = Math.max(24, ...pins.map(p => Math.abs(p.x) * 0.82));
+        const halfH = Math.max(18, ...pins.map(p => Math.abs(p.y) * 0.82));
+        const left = pins.some(p => p.x < -halfW + 2);
+        const right = pins.some(p => p.x > halfW - 2);
+        const top = pins.some(p => p.y < -halfH + 2);
+        const bottom = pins.some(p => p.y > halfH - 2);
+        return {
+            minX: comp.x - halfW - (left ? 0 : padding),
+            maxX: comp.x + halfW + (right ? 0 : padding),
+            minY: comp.y - halfH - (top ? 0 : padding),
+            maxY: comp.y + halfH + (bottom ? 0 : padding)
+        };
+    }
+
+    function pointInsideObstacle(p, obstacle) {
+        return p.x > obstacle.minX && p.x < obstacle.maxX &&
+            p.y > obstacle.minY && p.y < obstacle.maxY;
+    }
+
+    function segmentHitsObstacle(a, b, obstacle) {
+        if (a.x !== b.x && a.y !== b.y) return true;
+
+        if (a.x === b.x) {
+            const x = a.x;
+            if (x > obstacle.maxX || x < obstacle.minX) return false;
+            const top = Math.min(a.y, b.y), bottom = Math.max(a.y, b.y);
+            return bottom > obstacle.minY && top < obstacle.maxY;
+        }
+
+        const y = a.y;
+        if (y > obstacle.maxY || y < obstacle.minY) return false;
+        const left = Math.min(a.x, b.x), right = Math.max(a.x, b.x);
+        return right > obstacle.minX && left < obstacle.maxX;
+    }
+
+    function routeHitsAnyComponent(points) {
+        for (let i = 0; i < points.length - 1; i++) {
+            const a = points[i], b = points[i + 1];
+            for (const comp of components) {
+                const obstacle = getComponentObstacle(comp);
+                // 引脚本身位于元件边界附近，允许路径端点接触障碍边界。
+                if (segmentHitsObstacle(a, b, obstacle)) return true;
+            }
+        }
+        return false;
+    }
+
+    function getEndpointRules(comp, pin) {
+        const side = getPinSide(pin);
+        const dir = getDirection(side);
+        return {
+            side,
+            dir,
+            // 统一端点规则：起点必须先向元件外侧走。
+            // 不能因为另一条路线更短，就从引脚横向/反向钻进元件区域。
+            startAllowed: (dx, dy) => dx === dir.x && dy === dir.y,
+            // 统一端点规则：终点必须从元件外侧朝引脚进入。
+            // 注意：这里的移动方向与引脚“向外方向”相反。
+            // 左引脚：外侧 -> 引脚，方向为右；右引脚：外侧 -> 引脚，方向为左；
+            // 上引脚：外侧 -> 引脚，方向为下；下引脚：外侧 -> 引脚，方向为上。
+            endAllowed: (dx, dy) => dx === -dir.x && dy === -dir.y
+        };
+    }
+
+    function buildRoutingGrid(start, end, sourceComp, targetComp) {
+        // 参考 JointJS Manhattan router 的核心思路：固定 step 的虚拟正交网格，
+        // 再把障碍物边界和端点附近的通道加入网格。这样路径不会因为某个元件
+        // 的 bbox 恰好落在奇怪的小数坐标上而被迫绕远。
+        const step = 10;
+        const xs = new Set([start.x, end.x]);
+        const ys = new Set([start.y, end.y]);
+
+        const obstacles = components.map(c => getComponentObstacle(c));
+        const allX = [start.x, end.x, ...obstacles.flatMap(o => [o.minX, o.maxX])];
+        const allY = [start.y, end.y, ...obstacles.flatMap(o => [o.minY, o.maxY])];
+        const minX = Math.min(...allX) - 80;
+        const maxX = Math.max(...allX) + 80;
+        const minY = Math.min(...allY) - 80;
+        const maxY = Math.max(...allY) + 80;
+
+        for (let x = Math.floor(minX / step) * step; x <= maxX; x += step) xs.add(x);
+        for (let y = Math.floor(minY / step) * step; y <= maxY; y += step) ys.add(y);
+
+        // 精确加入障碍边界和端点外侧通道。
+        for (const o of obstacles) {
+            [o.minX, o.maxX, o.minX - step, o.maxX + step].forEach(x => xs.add(x));
+            [o.minY, o.maxY, o.minY - step, o.maxY + step].forEach(y => ys.add(y));
+        }
+
+        const extra = 30;
+        [start.x - extra, start.x + extra, end.x - extra, end.x + extra].forEach(x => xs.add(x));
+        [start.y - extra, start.y + extra, end.y - extra, end.y + extra].forEach(y => ys.add(y));
+
+        return {
+            xs: [...xs].sort((a, b) => a - b),
+            ys: [...ys].sort((a, b) => a - b)
+        };
+    }
+
+    function pointKey(p) {
+        return `${Math.round(p.x)},${Math.round(p.y)}`;
+    }
+
+    function isSafeGridPoint(p, start, end) {
+        if ((p.x === start.x && p.y === start.y) || (p.x === end.x && p.y === end.y)) return true;
+        return !components.some(comp => pointInsideObstacle(p, getComponentObstacle(comp)));
+    }
+
+    function isSafeGridSegment(a, b, start, end) {
+        // 硬约束：相邻节点必须共 X 或共 Y。
+        if (a.x !== b.x && a.y !== b.y) return false;
+
+        // 所有元件统一使用真实图形障碍框，不再对源/目标元件做特殊豁免。
+        // 引脚落在图形边界上，因此从引脚向外、从外部进入引脚都会自然成立。
+        for (const comp of components) {
+            if (segmentHitsObstacle(a, b, getComponentObstacle(comp))) return false;
+        }
+        return true;
+    }
+
+    // 当前一次寻路的上下文。仅用于网格段判断，避免把 comp/type 写死在算法里。
+    let routingContext = null;
+
+    function orthogonalRoute(start, end, sourceComp, targetComp, sourcePin, targetPin) {
+        const startRule = getEndpointRules(sourceComp, sourcePin);
+        const endRule = getEndpointRules(targetComp, targetPin);
+        const grid = buildRoutingGrid(start, end, sourceComp, targetComp);
+        routingContext = {
+            sourceCompId: sourceComp.id,
+            targetCompId: targetComp.id
+        };
+
+        const startKey = pointKey(start);
+        const endKey = pointKey(end);
+        const open = [];
+        const nodes = new Map();
+
+        // 状态不仅包含坐标，还包含“上一段方向”。
+        // 这样可以把拐弯作为明确成本，而不是事后猜测。
+        const makeStateKey = (x, y, dir) => `${x},${y},${dir}`;
+        const dirs = [
+            { x: 1, y: 0, name: 'R' },
+            { x: -1, y: 0, name: 'L' },
+            { x: 0, y: 1, name: 'D' },
+            { x: 0, y: -1, name: 'U' }
+        ];
+
+        function heuristic(x, y) {
+            return Math.abs(x - end.x) + Math.abs(y - end.y);
+        }
+
+        function pushState(state) {
+            open.push(state);
+            // 小型二叉堆：本页面网格很小，避免引入额外库。
+            let i = open.length - 1;
+            while (i > 0) {
+                const p = Math.floor((i - 1) / 2);
+                if (open[p].f <= open[i].f) break;
+                [open[p], open[i]] = [open[i], open[p]];
+                i = p;
+            }
+        }
+
+        function popState() {
+            const top = open[0];
+            const last = open.pop();
+            if (open.length) {
+                open[0] = last;
+                let i = 0;
+                while (true) {
+                    const l = i * 2 + 1, r = l + 1;
+                    let smallest = i;
+                    if (l < open.length && open[l].f < open[smallest].f) smallest = l;
+                    if (r < open.length && open[r].f < open[smallest].f) smallest = r;
+                    if (smallest === i) break;
+                    [open[i], open[smallest]] = [open[smallest], open[i]];
+                    i = smallest;
+                }
+            }
+            return top;
+        }
+
+        // start/end 使用真实引脚坐标，绝不吸附到“最近网格点”。
+        // 如果吸附到附近的其他 X/Y，再把首尾替换回真实坐标，就会产生斜线。
+        // 这是之前截图中出现斜线的根本原因。
+        const sx = start.x;
+        const sy = start.y;
+        const ex = end.x;
+        const ey = end.y;
+        const actualStart = { x: sx, y: sy };
+        const actualEnd = { x: ex, y: ey };
+
+        // 邻居：同一 X/Y 的相邻网格线交点。
+        function neighbors(x, y) {
+            const result = [];
+            const xi = grid.xs.indexOf(x), yi = grid.ys.indexOf(y);
+            if (xi > 0) result.push({ x: grid.xs[xi - 1], y, dx: -1, dy: 0, dir: 'L' });
+            if (xi < grid.xs.length - 1) result.push({ x: grid.xs[xi + 1], y, dx: 1, dy: 0, dir: 'R' });
+            if (yi > 0) result.push({ x, y: grid.ys[yi - 1], dx: 0, dy: -1, dir: 'U' });
+            if (yi < grid.ys.length - 1) result.push({ x, y: grid.ys[yi + 1], dx: 0, dy: 1, dir: 'D' });
+            return result;
+        }
+
+        // 初始状态 dir='S'，第一步用统一的 startAllowed 判断。
+        const initialKey = makeStateKey(sx, sy, 'S');
+        nodes.set(initialKey, { g: 0, f: heuristic(sx, sy), x: sx, y: sy, dir: 'S', parent: null });
+        pushState(nodes.get(initialKey));
+
+        let goal = null;
+        let iterations = 0;
+        const maxIterations = 12000;
+
+        while (open.length && iterations++ < maxIterations) {
+            const cur = popState();
+            if (!cur) break;
+            const currentKey = makeStateKey(cur.x, cur.y, cur.dir);
+            const known = nodes.get(currentKey);
+            if (!known || known.g !== cur.g) continue;
+
+            if (cur.x === ex && cur.y === ey) {
+                goal = cur;
+                break;
+            }
+
+            for (const n of neighbors(cur.x, cur.y)) {
+                const step = { x: n.x, y: n.y };
+                if (!isSafeGridPoint(step, actualStart, actualEnd)) continue;
+                if (!isSafeGridSegment({ x: cur.x, y: cur.y }, step, actualStart, actualEnd)) continue;
+
+                // 第一步：不能朝元件内部。
+                if (cur.dir === 'S' && !startRule.startAllowed(n.dx, n.dy)) continue;
+
+                // 最后一步：不能从元件内部朝引脚走。
+                if (n.x === ex && n.y === ey && !endRule.endAllowed(n.dx, n.dy)) continue;
+
+                const segmentLength = manhattan({ x: cur.x, y: cur.y }, step);
+                const isBend = cur.dir !== 'S' && cur.dir !== n.dir;
+                const isReverse = (cur.dir === 'L' && n.dir === 'R') || (cur.dir === 'R' && n.dir === 'L') ||
+                    (cur.dir === 'U' && n.dir === 'D') || (cur.dir === 'D' && n.dir === 'U');
+                const bendPenalty = isBend ? 45 : 0;
+                const reversePenalty = isReverse ? 120 : 0;
+                const g = cur.g + segmentLength + bendPenalty + reversePenalty;
+                const key = makeStateKey(n.x, n.y, n.dir);
+                const old = nodes.get(key);
+                if (!old || g < old.g) {
+                    const state = {
+                        g,
+                        f: g + heuristic(n.x, n.y),
+                        x: n.x,
+                        y: n.y,
+                        dir: n.dir,
+                        parent: cur
+                    };
+                    nodes.set(key, state);
+                    pushState(state);
+                }
+            }
+        }
+
+        if (goal) {
+            const points = [];
+            let cur = goal;
+            while (cur) {
+                points.push({ x: cur.x, y: cur.y });
+                cur = cur.parent;
+            }
+            points.reverse();
+            // 把真正的引脚坐标放回首尾，避免网格边界取整造成微小偏移。
+            points[0] = { x: start.x, y: start.y };
+            points[points.length - 1] = { x: end.x, y: end.y };
+            routingContext = null;
+            return simplifyOrthogonalPoints(points);
+        }
+
+        routingContext = null;
+
+        // 网格寻路极端失败时，仍然严格遵守两个端点的朝向。
+        // 先把两个引脚推出元件，再通过安全走廊连接，避免任何“从另一侧出来”的视觉效果。
+        const margin = 160;
+        const sdir = startRule.dir;
+        const edir = endRule.dir;
+        const startEscape = { x: start.x + sdir.x * 24, y: start.y + sdir.y * 24 };
+        const endEscape = { x: end.x + edir.x * 24, y: end.y + edir.y * 24 };
+        const obstacles = components.map(c => getComponentObstacle(c));
+        const safeTop = Math.min(start.y, end.y, ...obstacles.map(o => o.minY)) - margin;
+        const safeBottom = Math.max(start.y, end.y, ...obstacles.map(o => o.maxY)) + margin;
+        const safeLeft = Math.min(start.x, end.x, ...obstacles.map(o => o.minX)) - margin;
+        const safeRight = Math.max(start.x, end.x, ...obstacles.map(o => o.maxX)) + margin;
+        const corridors = [safeTop, safeBottom, safeLeft, safeRight];
+
+        for (const c of corridors) {
+            const candidates = [
+                [start, startEscape, { x: startEscape.x, y: c }, { x: endEscape.x, y: c }, endEscape, end],
+                [start, startEscape, { x: c, y: startEscape.y }, { x: c, y: endEscape.y }, endEscape, end]
+            ];
+            for (const p of candidates) {
+                const clean = simplifyOrthogonalPoints(p);
+                if (!routeHitsAnyComponent(clean)) return clean;
+            }
+        }
+
+        // 最后的兜底也必须保持严格正交。
+        // 这里绝对不能直接连接 startEscape -> endEscape，因为两个点通常既不共 X 也不共 Y，
+        // d3.line() 会把它们画成斜线。这正是之前截图中“更离谱”的根源。
+        // 即使所有网格候选都失败，也通过全局安全走廊构造纯水平/垂直路径。
+        const fallbackCandidates = [];
+        const top = safeTop, bottom = safeBottom, left = safeLeft, right = safeRight;
+
+        // 先沿各自引脚方向逃逸，再走外框，最后沿目标引脚方向进入。
+        fallbackCandidates.push(
+            [start, startEscape, { x: startEscape.x, y: top }, { x: endEscape.x, y: top }, endEscape, end],
+            [start, startEscape, { x: startEscape.x, y: bottom }, { x: endEscape.x, y: bottom }, endEscape, end],
+            [start, startEscape, { x: left, y: startEscape.y }, { x: left, y: endEscape.y }, endEscape, end],
+            [start, startEscape, { x: right, y: startEscape.y }, { x: right, y: endEscape.y }, endEscape, end]
+        );
+
+        for (const candidate of fallbackCandidates) {
+            const clean = simplifyOrthogonalPoints(candidate);
+            if (clean.every((p, i) => i === 0 || p.x === clean[i - 1].x || p.y === clean[i - 1].y) &&
+                !routeHitsAnyComponent(clean)) {
+                return clean;
+            }
+        }
+
+        // 理论上不会到这里；即便真的发生，也宁可返回纯正交路径，
+        // 绝不返回任何可能产生斜线的点序列。
+        const safeY = start.y <= end.y ? top : bottom;
+        const orthogonalFallback = simplifyOrthogonalPoints([
+            start,
+            startEscape,
+            { x: startEscape.x, y: safeY },
+            { x: endEscape.x, y: safeY },
+            endEscape,
+            end
+        ]);
+        return orthogonalFallback;
+    }
+
+    function orthogonalPath(points) {
+        return d3.line().x(d => d.x).y(d => d.y)(points);
     }
 
     // ========== 更新连线 ==========
@@ -694,30 +1250,76 @@
             const toPin = toDef && toDef.pins[wire.to.pinIndex];
             if (!fromPin || !toPin) return;
 
-            const x1 = fromComp.x + fromPin.x;
-            const y1 = fromComp.y + fromPin.y;
-            const x2 = toComp.x + toPin.x;
-            const y2 = toComp.y + toPin.y;
+            const start = {
+                x: fromComp.x + fromPin.x,
+                y: fromComp.y + fromPin.y
+            };
+            const end = {
+                x: toComp.x + toPin.x,
+                y: toComp.y + toPin.y
+            };
             const color = wire.color || '#4fc3f7';
             const width = Number(wire.width) || 2;
 
-            // 实际显示线
-            wireLayer.append('line')
+            if (routingMode === 'normal') {
+                // 普通模式：稳定版的直线连线。
+                wireLayer.append('line')
+                    .attr('class', 'wire')
+                    .attr('data-id', wire.id)
+                    .attr('x1', start.x)
+                    .attr('y1', start.y)
+                    .attr('x2', end.x)
+                    .attr('y2', end.y)
+                    .style('stroke', color)
+                    .style('stroke-width', `${width}px`);
+
+                wireLayer.append('line')
+                    .attr('class', 'wire-hit')
+                    .attr('data-id', wire.id)
+                    .attr('x1', start.x)
+                    .attr('y1', start.y)
+                    .attr('x2', end.x)
+                    .attr('y2', end.y)
+                    .on('mouseenter', function() {
+                        d3.select(this.parentNode)
+                            .select('.wire[data-id="' + wire.id + '"]')
+                            .classed('wire-hover', true);
+                    })
+                    .on('mouseleave', function() {
+                        d3.select(this.parentNode)
+                            .select('.wire[data-id="' + wire.id + '"]')
+                            .classed('wire-hover', false);
+                    })
+                    .on('click', function(event) {
+                        event.stopPropagation();
+                        selectWire(wire.id);
+                    })
+                    .on('contextmenu', function(event) {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        deleteWire(wire.id);
+                    });
+                return;
+            }
+
+            // 自动布线模式：当前 Manhattan 风格正交避障路由。
+            const points = orthogonalRoute(
+                start, end, fromComp, toComp, fromPin, toPin
+            );
+            const path = orthogonalPath(points);
+
+            wireLayer.append('path')
                 .attr('class', 'wire')
                 .attr('data-id', wire.id)
-                .attr('x1', x1).attr('y1', y1)
-                .attr('x2', x2).attr('y2', y2)
+                .attr('d', path)
                 .style('stroke', color)
                 .style('stroke-width', `${width}px`)
                 .style('pointer-events', 'none');
 
-            // 透明粗命中区，负责鼠标交互
-            wireLayer.append('line')
+            wireLayer.append('path')
                 .attr('class', 'wire-hit')
                 .attr('data-id', wire.id)
-                .attr('x1', x1).attr('y1', y1)
-                .attr('x2', x2).attr('y2', y2)
-                .style('cursor', 'pointer')
+                .attr('d', path)
                 .on('mouseenter', function() {
                     d3.select(this.parentNode)
                         .select('.wire[data-id="' + wire.id + '"]')
@@ -738,9 +1340,47 @@
                     deleteWire(wire.id);
                 });
         });
-
-        // 命中区在可视线之后追加，但透明且只响应 stroke，不会遮挡元件 pin。
     }
+
+    // ========== 布线模式切换 ==========
+    function updateRoutingModeUI() {
+        const normalBtn = document.getElementById('routing-mode-normal');
+        const autoBtn = document.getElementById('routing-mode-auto');
+        const hint = document.getElementById('routing-mode-hint');
+
+        normalBtn.classList.toggle('active', routingMode === 'normal');
+        autoBtn.classList.toggle('active', routingMode === 'auto');
+
+        hint.textContent = routingMode === 'normal'
+            ? '普通：与稳定版一致，直接连接两端'
+            : '自动：横平竖直，并尝试绕开元件';
+
+        const status = document.getElementById('status-bar');
+        if (status) {
+            status.textContent = routingMode === 'normal'
+                ? '普通模式：稳定版直线连线 | 左键点击引脚连线 | 拖拽元件 | 右键删除连线 | Delete 删除'
+                : '自动布线模式：正交避障连线 | 左键点击引脚连线 | 拖拽元件会重新计算 | 右键删除连线 | Delete 删除';
+        }
+    }
+
+    function setRoutingMode(mode) {
+        if (mode !== 'normal' && mode !== 'auto') return;
+        if (routingMode === mode) return;
+
+        if (wiringState) cancelWiring();
+
+        routingMode = mode;
+        updateRoutingModeUI();
+        updateWires();
+    }
+
+    document.getElementById('routing-mode-normal').addEventListener('click', function() {
+        setRoutingMode('normal');
+    });
+
+    document.getElementById('routing-mode-auto').addEventListener('click', function() {
+        setRoutingMode('auto');
+    });
 
     // ========== 选择、属性编辑、删除 ==========
     // 注意：面板里的颜色/线宽是“草稿值”，只有点击“确认修改”才写入数据模型。
@@ -1179,6 +1819,7 @@
 
     // 初始状态
     renderComponents();
+    updateRoutingModeUI();
     updateWires();
     refreshProperties();
 </script>
