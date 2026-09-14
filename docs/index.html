@@ -1,0 +1,1186 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>D3.js 电路图编辑器</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', sans-serif; display: flex; height: 100vh; background: #1a1a2e; color: #eee; }
+        #palette {
+            width: 220px; background: #16213e; padding: 12px;
+            border-right: 1px solid #0f3460; display: flex; flex-direction: column;
+            gap: 8px; overflow-y: auto;
+        }
+        #palette h3 { font-size: 14px; color: #a0a0c0; margin-bottom: 2px; }
+        .palette-toolbar { display: flex; flex-direction: column; gap: 8px; }
+        .file-actions { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+        .file-actions button {
+            border: 1px solid #35567f; border-radius: 5px; background: #0f3460;
+            color: #dbeafe; padding: 7px 5px; font-size: 11px; cursor: pointer;
+        }
+        .file-actions button:hover { border-color: #4fc3f7; background: #1a4080; }
+        .file-actions button.danger { border-color: #7f3540; background: #4a1820; color: #ffd7dc; }
+        .file-actions button.danger:hover { border-color: #ff6677; background: #6b202c; }
+        .palette-category {
+            color: #64748b; font-size: 11px; padding: 7px 4px 2px;
+            border-bottom: 1px solid #263653; margin-top: 2px;
+        }
+        .palette-grid {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
+        }
+        .palette-item {
+            background: #0f3460; border: 1px solid #1a4080; border-radius: 6px;
+            padding: 7px 4px; text-align: center; cursor: grab; user-select: none;
+            transition: background 0.15s, border-color 0.15s;
+        }
+        .palette-item:hover { background: #1a4080; border-color: #4fc3f7; }
+        .palette-item:active { cursor: grabbing; }
+        .palette-item span { display: block; font-size: 11px; margin-top: 2px; color: #b4bfd3; }
+        .palette-item .symbol { font-size: 18px; line-height: 24px; color: #4fc3f7; font-weight: 600; }
+
+        #canvas-container {
+            flex: 1; position: relative; overflow: hidden; background: #0d1117;
+        }
+        #main-svg { width: 100%; height: 100%; display: block; }
+
+        .component { cursor: move; }
+        .component-body { fill: none; stroke: #64748b; stroke-width: 1.5; }
+        .component-label { fill: #94a3b8; font-size: 11px; text-anchor: middle; pointer-events: none; }
+
+        .pin { fill: #334155; stroke: #64748b; stroke-width: 1.5; cursor: crosshair; }
+        .pin:hover { fill: #4fc3f7; stroke: #4fc3f7; }
+
+        .wire { stroke: #4fc3f7; stroke-width: 2; fill: none; }
+        .wire-temp { stroke: #4fc3f7; stroke-width: 1.5; stroke-dasharray: 6 3; fill: none; pointer-events: none; }
+
+        #status-bar {
+            position: absolute; bottom: 0; left: 0; right: 0;
+            background: #16213e; padding: 6px 16px; font-size: 12px; color: #8888aa;
+            border-top: 1px solid #0f3460;
+        }
+
+        /* 已连接线：透明粗命中区域，实际显示仍保持细线 */
+        .wire-hit {
+            stroke: transparent;
+            stroke-width: 14px;
+            fill: none;
+            pointer-events: stroke;
+        }
+
+        /* 鼠标靠近线时给出明显反馈 */
+        .wire-hover {
+            stroke-width: 4px !important;
+            cursor: pointer;
+        }
+
+
+        /* 选中状态 */
+        .component.selected {
+            outline: 2px solid #4fc3f7;
+            outline-offset: 5px;
+        }
+        .component.selected .component-body {
+            filter: drop-shadow(0 0 5px #4fc3f7);
+        }
+        .wire.selected {
+            filter: drop-shadow(0 0 5px #4fc3f7);
+        }
+
+        /* 属性编辑面板 */
+        #properties {
+            position: fixed;
+            right: 18px;
+            top: 18px;
+            width: 260px;
+            background: #111827;
+            border: 1px solid #35567f;
+            border-radius: 10px;
+            padding: 14px;
+            z-index: 9999;
+            box-shadow: 0 12px 32px rgba(0,0,0,.45);
+            color: #e8eef7;
+        }
+        #properties.hidden { display: none !important; }
+        .properties-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 12px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #263653;
+        }
+        #properties h3 {
+            margin: 0;
+            font-size: 14px;
+            color: #f1f5f9;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .icon-button {
+            width: 26px;
+            height: 26px;
+            padding: 0;
+            border: 1px solid #35567f;
+            border-radius: 5px;
+            background: #0f3460;
+            color: #cbd5e1;
+            font-size: 18px;
+            line-height: 22px;
+            cursor: pointer;
+        }
+        .icon-button:hover { border-color: #4fc3f7; color: #fff; }
+        .prop-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin: 12px 0;
+        }
+        .prop-row > label {
+            flex: 0 0 48px;
+            font-size: 12px;
+            color: #aab7cc;
+        }
+        .color-editor, .width-editor {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        #prop-color {
+            display: block !important;
+            width: 52px !important;
+            height: 30px !important;
+            min-width: 52px;
+            padding: 2px;
+            border: 1px solid #49688f;
+            border-radius: 5px;
+            background: #0b1220;
+            cursor: pointer;
+            appearance: auto;
+        }
+        #prop-color-value {
+            font-family: Consolas, monospace;
+            font-size: 11px;
+            color: #dce7f5;
+        }
+        #prop-width {
+            flex: 1;
+            width: auto !important;
+            min-width: 100px;
+            cursor: pointer;
+        }
+        #prop-width-value {
+            flex: 0 0 42px;
+            text-align: right;
+            color: #dce7f5;
+            font-size: 12px;
+        }
+        .prop-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 16px;
+        }
+        .prop-actions button {
+            flex: 1;
+            min-width: 0;
+            border: 1px solid #35567f;
+            background: #0f3460;
+            color: #dce7f5;
+            border-radius: 5px;
+            padding: 7px 8px;
+            cursor: pointer;
+        }
+        .prop-actions button:hover {
+            border-color: #4fc3f7;
+            background: #16446f;
+        }
+        .prop-actions .primary-action {
+            background: #1769aa;
+            border-color: #4fc3f7;
+            color: #fff;
+        }
+        .prop-actions .primary-action:hover {
+            background: #2185c7;
+        }
+
+        /* SVG 元件选中框 */
+        .selection-frame {
+            fill: rgba(79,195,247,.06);
+            stroke: #4fc3f7;
+            stroke-width: 1.5;
+            stroke-dasharray: 5 3;
+            pointer-events: none;
+        }
+        .wire.selected {
+            filter: drop-shadow(0 0 5px #4fc3f7);
+        }
+
+    </style>
+</head>
+<body>
+
+<!-- 左侧元件库 -->
+
+<div id="palette">
+    <div class="palette-toolbar">
+        <h3>数字电路元件库</h3>
+        <div class="file-actions">
+            <button id="export-json" type="button">导出 JSON</button>
+            <button id="import-json" type="button">导入 JSON</button>
+            <button id="clear-canvas" type="button" class="danger">清空画布</button>
+            <input id="json-file-input" type="file" accept=".json,application/json" hidden>
+        </div>
+    </div>
+
+    <div class="palette-category">基本电气</div>
+    <div class="palette-grid">
+        <div class="palette-item" draggable="true" data-type="resistor"><div class="symbol">R</div><span>电阻</span></div>
+        <div class="palette-item" draggable="true" data-type="capacitor"><div class="symbol">C</div><span>电容</span></div>
+        <div class="palette-item" draggable="true" data-type="battery"><div class="symbol">V</div><span>电源</span></div>
+        <div class="palette-item" draggable="true" data-type="ground"><div class="symbol">⏚</div><span>GND</span></div>
+        <div class="palette-item" draggable="true" data-type="vcc"><div class="symbol">VCC</div><span>VCC</span></div>
+        <div class="palette-item" draggable="true" data-type="led"><div class="symbol">▶</div><span>LED</span></div>
+        <div class="palette-item" draggable="true" data-type="switch"><div class="symbol">SW</div><span>开关</span></div>
+        <div class="palette-item" draggable="true" data-type="button"><div class="symbol">BTN</div><span>按钮</span></div>
+        <div class="palette-item" draggable="true" data-type="clock"><div class="symbol">CLK</div><span>时钟</span></div>
+    </div>
+
+    <div class="palette-category">逻辑门</div>
+    <div class="palette-grid">
+        <div class="palette-item" draggable="true" data-type="not"><div class="symbol">¬</div><span>NOT 非</span></div>
+        <div class="palette-item" draggable="true" data-type="buffer"><div class="symbol">▷</div><span>BUF 缓冲</span></div>
+        <div class="palette-item" draggable="true" data-type="and"><div class="symbol">AND</div><span>与门</span></div>
+        <div class="palette-item" draggable="true" data-type="or"><div class="symbol">OR</div><span>或门</span></div>
+        <div class="palette-item" draggable="true" data-type="nand"><div class="symbol">NAND</div><span>与非门</span></div>
+        <div class="palette-item" draggable="true" data-type="nor"><div class="symbol">NOR</div><span>或非门</span></div>
+        <div class="palette-item" draggable="true" data-type="xor"><div class="symbol">XOR</div><span>异或门</span></div>
+        <div class="palette-item" draggable="true" data-type="xnor"><div class="symbol">XNOR</div><span>同或门</span></div>
+        <div class="palette-item" draggable="true" data-type="triState"><div class="symbol">▷Z</div><span>三态门</span></div>
+    </div>
+
+    <div class="palette-category">组合逻辑</div>
+    <div class="palette-grid">
+        <div class="palette-item" draggable="true" data-type="mux2"><div class="symbol">MUX</div><span>2:1 多路选择</span></div>
+        <div class="palette-item" draggable="true" data-type="demux"><div class="symbol">DMX</div><span>1:2 分配器</span></div>
+        <div class="palette-item" draggable="true" data-type="decoder"><div class="symbol">DEC</div><span>2→4 译码器</span></div>
+        <div class="palette-item" draggable="true" data-type="encoder"><div class="symbol">ENC</div><span>4→2 编码器</span></div>
+        <div class="palette-item" draggable="true" data-type="halfAdder"><div class="symbol">HA</div><span>半加器</span></div>
+        <div class="palette-item" draggable="true" data-type="fullAdder"><div class="symbol">FA</div><span>全加器</span></div>
+        <div class="palette-item" draggable="true" data-type="comparator"><div class="symbol">CMP</div><span>比较器</span></div>
+        <div class="palette-item" draggable="true" data-type="adder4"><div class="symbol">ADD</div><span>4位加法器</span></div>
+        <div class="palette-item" draggable="true" data-type="sevenSeg"><div class="symbol">7SEG</div><span>七段数码管</span></div>
+    </div>
+
+    <div class="palette-category">时序逻辑</div>
+    <div class="palette-grid">
+        <div class="palette-item" draggable="true" data-type="srLatch"><div class="symbol">SR</div><span>SR 锁存器</span></div>
+        <div class="palette-item" draggable="true" data-type="dLatch"><div class="symbol">D-L</div><span>D 锁存器</span></div>
+        <div class="palette-item" draggable="true" data-type="dff"><div class="symbol">DFF</div><span>D 触发器</span></div>
+        <div class="palette-item" draggable="true" data-type="jkff"><div class="symbol">JK</div><span>JK 触发器</span></div>
+        <div class="palette-item" draggable="true" data-type="tff"><div class="symbol">T</div><span>T 触发器</span></div>
+        <div class="palette-item" draggable="true" data-type="counter4"><div class="symbol">CTR</div><span>4位计数器</span></div>
+        <div class="palette-item" draggable="true" data-type="shiftReg4"><div class="symbol">SRG</div><span>4位移位寄存器</span></div>
+        <div class="palette-item" draggable="true" data-type="reg4"><div class="symbol">REG</div><span>4位寄存器</span></div>
+    </div>
+
+    <div class="palette-category">接口 / 控制</div>
+    <div class="palette-grid">
+        <div class="palette-item" draggable="true" data-type="input"><div class="symbol">IN</div><span>输入端</span></div>
+        <div class="palette-item" draggable="true" data-type="output"><div class="symbol">OUT</div><span>输出端</span></div>
+        <div class="palette-item" draggable="true" data-type="pullup"><div class="symbol">↑</div><span>上拉</span></div>
+        <div class="palette-item" draggable="true" data-type="pulldown"><div class="symbol">↓</div><span>下拉</span></div>
+    </div>
+</div>
+
+<!-- 右侧画布 -->
+<div id="properties" class="hidden">
+    <div class="properties-head">
+        <h3 id="properties-title">属性</h3>
+        <button id="clear-selection" class="icon-button" title="取消选择">×</button>
+    </div>
+
+    <div class="prop-row">
+        <label for="prop-color">颜色</label>
+        <div class="color-editor">
+            <input id="prop-color" type="color" value="#4fc3f7">
+            <span id="prop-color-value">#4FC3F7</span>
+        </div>
+    </div>
+
+    <div id="wire-width-row" class="prop-row">
+        <label for="prop-width">线宽</label>
+        <div class="width-editor">
+            <input id="prop-width" type="range" min="1" max="12" step="1" value="2">
+            <output id="prop-width-value">2 px</output>
+        </div>
+    </div>
+
+    <div class="prop-actions">
+        <button id="apply-properties" class="primary-action">确认修改</button>
+        <button id="delete-selected">删除选中</button>
+    </div>
+</div>
+
+<div id="canvas-container">
+    <svg id="main-svg"></svg>
+    <div id="status-bar">提示：拖拽元件到画布 | 左键点击引脚连线 | 点击元件/连线编辑属性 | 导入/导出 JSON | 清空画布 | 右键连线删除 | Delete 删除 | 滚轮缩放</div>
+</div>
+
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script>
+    // ========== 数据模型 ==========
+    let components = [];
+    let wires = [];
+    let nextId = 1;
+    let wiringState = null;
+    let selectedType = null;
+    let selectedId = null;
+
+
+    // ========== 元件定义 ==========
+    const P = (x, y) => ({ x, y });
+
+    function box(g, w, h, label) {
+        g.append('rect').attr('class', 'component-body')
+            .attr('x', -w / 2).attr('y', -h / 2).attr('width', w).attr('height', h)
+            .attr('rx', 5);
+        g.append('text').attr('class', 'component-label').attr('y', 4).text(label);
+    }
+
+    function gate(g, label, kind) {
+        const p = kind === 'not' || kind === 'buffer'
+            ? 'M-28,-18 L0,-18 Q24,0 0,18 L-28,18 Z'
+            : 'M-28,-18 L-4,-18 Q20,-18 28,0 Q20,18 -4,18 L-28,18 Z';
+        if (kind === 'and' || kind === 'nand') {
+            g.append('path').attr('d', p).attr('class', 'component-body');
+        } else if (kind === 'or' || kind === 'nor' || kind === 'xor' || kind === 'xnor') {
+            let d = 'M-30,-18 Q-10,-12 0,0 Q-10,12 -30,18 Q-5,16 26,0 Q-5,-16 -30,-18 Z';
+            g.append('path').attr('d', d).attr('class', 'component-body');
+            if (kind === 'xor' || kind === 'xnor') {
+                g.append('path').attr('d', 'M-35,-18 Q-15,-12 -5,0 Q-15,12 -35,18')
+                    .attr('class', 'component-body');
+            }
+        } else {
+            g.append('path').attr('d', p).attr('class', 'component-body');
+        }
+        if (kind === 'not' || kind === 'nand' || kind === 'nor' || kind === 'xnor') {
+            g.append('circle').attr('cx', 34).attr('cy', 0).attr('r', 4).attr('class', 'component-body');
+        }
+        g.append('text').attr('class', 'component-label').attr('y', 4).text(label);
+    }
+
+    function standardGate(label, kind) {
+        return {
+            label,
+            pins: [P(-45, -10), P(-45, 10), P(45, 0)],
+            draw(g) { gate(g, label, kind); }
+        };
+    }
+
+    const COMPONENT_DEFS = {
+        resistor: {
+            label: 'R', pins: [P(-40,0), P(40,0)],
+            draw(g) { g.append('path').attr('d','M-40,0 L-28,0 L-22,-12 L-14,12 L-6,-12 L2,12 L10,-12 L18,12 L24,0 L40,0').attr('class','component-body'); g.append('text').attr('class','component-label').attr('y',-18).text('R'); }
+        },
+        capacitor: {
+            label: 'C', pins: [P(-40,0), P(40,0)],
+            draw(g) { g.append('line').attr('x1',-40).attr('x2',-8).attr('y1',0).attr('y2',0).attr('class','component-body'); g.append('line').attr('x1',-8).attr('x2',-8).attr('y1',-16).attr('y2',16).attr('stroke','#4fc3f7').attr('stroke-width',2.5); g.append('line').attr('x1',8).attr('x2',8).attr('y1',-16).attr('y2',16).attr('stroke','#4fc3f7').attr('stroke-width',2.5); g.append('line').attr('x1',8).attr('x2',40).attr('y1',0).attr('y2',0).attr('class','component-body'); g.append('text').attr('class','component-label').attr('y',-22).text('C'); }
+        },
+        battery: {
+            label:'V', pins:[P(-40,0),P(40,0)],
+            draw(g){ g.append('line').attr('x1',-40).attr('x2',-14).attr('y1',0).attr('y2',0).attr('class','component-body'); g.append('line').attr('x1',-14).attr('x2',-14).attr('y1',-16).attr('y2',16).attr('stroke','#4fc3f7').attr('stroke-width',3); g.append('line').attr('x1',6).attr('x2',6).attr('y1',-16).attr('y2',16).attr('stroke','#4fc3f7').attr('stroke-width',3); g.append('line').attr('x1',6).attr('x2',40).attr('y1',0).attr('y2',0).attr('class','component-body'); g.append('text').attr('class','component-label').attr('y',-22).text('V'); }
+        },
+        led: {
+            label:'LED', pins:[P(-40,0),P(40,0)],
+            draw(g){ g.append('line').attr('x1',-40).attr('x2',-14).attr('y1',0).attr('y2',0).attr('class','component-body'); g.append('polygon').attr('points','-14,-14 -14,14 14,0').attr('class','component-body'); g.append('line').attr('x1',14).attr('x2',14).attr('y1',-14).attr('y2',14).attr('stroke','#4fc3f7').attr('stroke-width',2); g.append('line').attr('x1',14).attr('x2',40).attr('y1',0).attr('y2',0).attr('class','component-body'); g.append('text').attr('class','component-label').attr('y',-22).text('LED'); }
+        },
+        ground: { label:'GND', pins:[P(0,-25)], draw(g){ g.append('line').attr('x1',0).attr('x2',0).attr('y1',-25).attr('y2',0).attr('class','component-body'); [12,20,28].forEach((w,i)=>g.append('line').attr('x1',-w/2).attr('x2',w/2).attr('y1',i*5).attr('y2',i*5).attr('class','component-body')); g.append('text').attr('class','component-label').attr('y',20).text('GND'); } },
+        vcc: { label:'VCC', pins:[P(0,25)], draw(g){ g.append('line').attr('x1',0).attr('x2',0).attr('y1',25).attr('y2',-5).attr('class','component-body'); g.append('path').attr('d','M-10,-5 L0,-18 L10,-5 Z').attr('class','component-body'); g.append('text').attr('class','component-label').attr('y',-22).text('VCC'); } },
+        switch: { label:'SW', pins:[P(-40,0),P(40,0)], draw(g){ g.append('line').attr('x1',-40).attr('x2',-8).attr('y1',0).attr('y2',0).attr('class','component-body'); g.append('line').attr('x1',-8).attr('x2',30).attr('y1',-12).attr('y2',0).attr('stroke','#4fc3f7').attr('stroke-width',2); g.append('circle').attr('cx',-8).attr('cy',0).attr('r',3).attr('class','component-body'); g.append('circle').attr('cx',30).attr('cy',0).attr('r',3).attr('class','component-body'); g.append('line').attr('x1',30).attr('x2',40).attr('y1',0).attr('y2',0).attr('class','component-body'); g.append('text').attr('class','component-label').attr('y',-20).text('SW'); } },
+        button: { label:'BTN', pins:[P(-40,0),P(40,0)], draw(g){ box(g,45,30,'BTN'); g.append('line').attr('x1',-40).attr('x2',-23).attr('y1',0).attr('y2',0).attr('class','component-body'); g.append('line').attr('x1',23).attr('x2',40).attr('y1',0).attr('y2',0).attr('class','component-body'); } },
+        clock: { label:'CLK', pins:[P(0,35)], draw(g){ box(g,55,40,'CLK'); g.append('path').attr('d','M-20,5 L-10,5 L-10,-5 L0,-5 L0,5 L10,5 L10,-5 L20,-5').attr('class','component-body'); } },
+        not: {label:'NOT',pins:[P(-45,0),P(45,0)],draw(g){gate(g,'NOT','not');}},
+        buffer: {label:'BUF',pins:[P(-45,0),P(45,0)],draw(g){gate(g,'BUF','buffer');}},
+        and: standardGate('AND','and'),
+        or: standardGate('OR','or'),
+        nand: standardGate('NAND','nand'),
+        nor: standardGate('NOR','nor'),
+        xor: standardGate('XOR','xor'),
+        xnor: standardGate('XNOR','xnor'),
+        triState: {label:'BUF',pins:[P(-45,0),P(-45,15),P(45,0)],draw(g){gate(g,'▷','buffer');g.append('text').attr('class','component-label').attr('y',30).text('EN');}},
+        mux2: {label:'MUX',pins:[P(-45,-15),P(-45,15),P(-15,35),P(45,0)],draw(g){box(g,60,55,'MUX');g.append('text').attr('class','component-label').attr('x',-15).attr('y',48).text('S');}},
+        demux: {label:'DMX',pins:[P(-45,0),P(45,-15),P(45,15)],draw(g){box(g,60,55,'DMX');g.append('text').attr('class','component-label').attr('x',0).attr('y',45).text('S');}},
+        decoder: {label:'DEC',pins:[P(-45,-15),P(-45,15),P(45,-25),P(45,-8),P(45,8),P(45,25)],draw(g){box(g,65,65,'2→4');}},
+        encoder: {label:'ENC',pins:[P(-45,-25),P(-45,-8),P(-45,8),P(-45,25),P(45,-10),P(45,10)],draw(g){box(g,65,65,'4→2');}},
+        halfAdder: {label:'HA',pins:[P(-45,-10),P(-45,10),P(45,-10),P(45,10)],draw(g){box(g,60,55,'HA');g.append('text').attr('class','component-label').attr('y',22).text('Σ  C');}},
+        fullAdder: {label:'FA',pins:[P(-45,-18),P(-45,0),P(-45,18),P(45,-10),P(45,10)],draw(g){box(g,65,70,'FA');g.append('text').attr('class','component-label').attr('y',27).text('Σ  C');}},
+        comparator: {label:'CMP',pins:[P(-45,-20),P(-45,0),P(-45,20),P(45,-15),P(45,0),P(45,15)],draw(g){box(g,70,70,'CMP');}},
+        adder4: {label:'ADD',pins:[P(-45,-25),P(-45,-8),P(-45,8),P(-45,25),P(45,-15),P(45,15)],draw(g){box(g,70,75,'ADD4');}},
+        sevenSeg: {label:'7SEG',pins:[P(-45,-24),P(-45,-8),P(-45,8),P(-45,24),P(45,-24),P(45,-8),P(45,8)],draw(g){box(g,55,65,'7SEG');g.append('text').attr('class','component-label').attr('y',30).text('abcdefg');}},
+        srLatch: {label:'SR',pins:[P(-45,-10),P(-45,10),P(45,-10),P(45,10)],draw(g){box(g,60,55,'SR');}},
+        dLatch: {label:'D-L',pins:[P(-45,-10),P(-45,10),P(45,-10),P(45,10)],draw(g){box(g,60,55,'D-L');g.append('text').attr('class','component-label').attr('x',-20).attr('y',-16).text('D');g.append('text').attr('class','component-label').attr('x',-20).attr('y',22).text('EN');}},
+        dff: {label:'DFF',pins:[P(-45,-15),P(-45,15),P(45,-15),P(45,15)],draw(g){box(g,60,65,'DFF');g.append('text').attr('class','component-label').attr('x',-18).attr('y',-18).text('D');g.append('text').attr('class','component-label').attr('x',-18).attr('y',22).text('CLK');g.append('text').attr('class','component-label').attr('x',18).attr('y',-18).text('Q');g.append('text').attr('class','component-label').attr('x',18).attr('y',22).text('Q̅');}},
+        jkff: {label:'JK',pins:[P(-45,-15),P(-45,0),P(-45,15),P(45,-15),P(45,15)],draw(g){box(g,60,70,'JK');}},
+        tff: {label:'TFF',pins:[P(-45,-15),P(-45,15),P(45,-15),P(45,15)],draw(g){box(g,60,65,'TFF');}},
+        counter4: {label:'CTR',pins:[P(-45,0),P(-45,18),P(45,-25),P(45,-8),P(45,8),P(45,25)],draw(g){box(g,75,75,'CTR4');}},
+        shiftReg4: {label:'SRG',pins:[P(-45,-18),P(-45,18),P(45,-24),P(45,-8),P(45,8),P(45,24)],draw(g){box(g,75,75,'SRG4');}},
+        reg4: {label:'REG',pins:[P(-45,-18),P(-45,18),P(45,-24),P(45,-8),P(45,8),P(45,24)],draw(g){box(g,75,75,'REG4');}},
+        input: {label:'IN',pins:[P(40,0)],draw(g){g.append('path').attr('d','M-25,-16 L10,-16 L25,0 L10,16 L-25,16 Z').attr('class','component-body');g.append('text').attr('class','component-label').attr('y',4).text('IN');}},
+        output: {label:'OUT',pins:[P(-40,0)],draw(g){g.append('path').attr('d','M-25,-16 L10,-16 L25,0 L10,16 L-25,16 Z').attr('class','component-body');g.append('text').attr('class','component-label').attr('y',4).text('OUT');}},
+        pullup: {label:'PU',pins:[P(0,25)],draw(g){g.append('line').attr('x1',0).attr('x2',0).attr('y1',25).attr('y2',-12).attr('class','component-body');g.append('polyline').attr('points','-12,-2 0,-14 12,-2').attr('class','component-body');g.append('text').attr('class','component-label').attr('y',-20).text('PULL-UP');}},
+        pulldown: {label:'PD',pins:[P(0,-25)],draw(g){g.append('line').attr('x1',0).attr('x2',0).attr('y1',-25).attr('y2',12).attr('class','component-body');g.append('polyline').attr('points','-12,2 0,14 12,2').attr('class','component-body');g.append('text').attr('class','component-label').attr('y',-20).text('PULL-DOWN');}}
+    };
+
+    // ========== 初始化画布 ==========
+    const container = document.getElementById('canvas-container');
+    const svg = d3.select('#main-svg');
+
+    // 缩放平移
+    const zoomGroup = svg.append('g').attr('class', 'zoom-group');
+    const zoom = d3.zoom()
+        .scaleExtent([0.3, 3])
+        .on('zoom', (event) => {
+            zoomGroup.attr('transform', event.transform);
+        });
+    svg.call(zoom);
+
+    // 图层
+    const wireLayer = zoomGroup.append('g').attr('class', 'wire-layer');
+    const componentLayer = zoomGroup.append('g').attr('class', 'component-layer');
+    const tempWireLayer = zoomGroup.append('g').attr('class', 'temp-wire-layer');
+
+    // ========== 拖拽放置（修复核心） ==========
+    // 1. 为每个元件项绑定 dragstart
+    document.querySelectorAll('.palette-item').forEach(item => {
+        item.addEventListener('dragstart', (e) => {
+            e.dataTransfer.setData('type', item.dataset.type);
+            e.dataTransfer.effectAllowed = 'copy';
+        });
+    });
+
+    // 2. 在容器上绑定 dragover（必须 preventDefault）和 drop
+    container.addEventListener('dragover', (e) => {
+        e.preventDefault();          // 关键：允许 drop
+        e.dataTransfer.dropEffect = 'copy';
+    });
+
+    container.addEventListener('drop', (e) => {
+        e.preventDefault();
+        const type = e.dataTransfer.getData('type');
+        console.log('drop type:', type);  // 调试用
+        if (!type || !COMPONENT_DEFS[type]) return;
+
+        // 屏幕坐标 → SVG 坐标
+        const transform = d3.zoomTransform(svg.node());
+        const rect = container.getBoundingClientRect();
+        const x = (e.clientX - rect.left - transform.x) / transform.k;
+        const y = (e.clientY - rect.top - transform.y) / transform.k;
+
+        addComponent(type, Math.round(x / 20) * 20, Math.round(y / 20) * 20);
+    });
+
+    // ========== 添加元件 ==========
+    function addComponent(type, x, y) {
+        const id = nextId++;
+        const comp = {
+            id, type, x, y,
+            color: '#4fc3f7'
+        };
+        components.push(comp);
+        renderComponent(comp);
+    }
+
+    // ========== 统一外观 ==========
+    function applyComponentAppearance(g, color) {
+        const c = color || '#4fc3f7';
+
+        // 所有图形元素统一使用元件颜色；文字仍使用 fill。
+        g.selectAll('path, line, rect, polygon, polyline, circle')
+            .filter(function() {
+                return !this.classList.contains('pin') &&
+                    !this.classList.contains('selection-frame');
+            })
+            .style('stroke', c);
+
+        // 使用 style()，确保覆盖 .component-body { stroke: ... } 的 CSS。
+        g.selectAll('.component-body').style('stroke', c);
+        g.selectAll('.component-label').attr('fill', '#94a3b8');
+        g.selectAll('.pin')
+            .attr('fill', '#334155')
+            .attr('stroke', '#64748b');
+
+        g.style('color', c);
+    }
+
+    function addSelectionFrame(g) {
+        g.selectAll('.selection-frame').remove();
+        const node = g.node();
+        if (!node) return;
+
+        try {
+            const b = node.getBBox();
+            g.insert('rect', ':first-child')
+                .attr('class', 'selection-frame')
+                .attr('x', b.x - 8)
+                .attr('y', b.y - 8)
+                .attr('width', Math.max(1, b.width + 16))
+                .attr('height', Math.max(1, b.height + 16))
+                .attr('rx', 5);
+        } catch (err) {
+            // 某些极端浏览器环境 getBBox 失败时，不影响编辑器其他功能。
+        }
+    }
+
+    // 删除/重绘组件时必须有这个函数；v5 缺失它会在删除组件后直接抛异常。
+    function renderComponents() {
+        componentLayer.selectAll('*').remove();
+        components.forEach(renderComponent);
+        if (selectedType === 'component' && selectedId != null) {
+            d3.selectAll('.component')
+                .filter(function() { return Number(this.dataset.id) === selectedId; })
+                .classed('selected', true)
+                .each(function() { addSelectionFrame(d3.select(this)); });
+        }
+    }
+
+    // ========== 渲染元件 ==========
+    function renderComponent(comp) {
+        const def = COMPONENT_DEFS[comp.type];
+        const g = componentLayer.append('g')
+            .attr('class', 'component')
+            .attr('data-id', comp.id)
+            .attr('transform', `translate(${comp.x}, ${comp.y})`)
+            .style('color', comp.color || '#4fc3f7');
+
+        def.draw(g);
+        applyComponentAppearance(g, comp.color);
+
+        // 引脚
+        def.pins.forEach((pin, i) => {
+            g.append('circle')
+                .attr('class', 'pin')
+                .attr('cx', pin.x).attr('cy', pin.y).attr('r', 5)
+                // 引脚使用左键点击开始/完成连线
+                .on('mousedown', function(event) {
+                    // 阻止元件拖拽和 SVG zoom 抢走引脚的鼠标事件
+                    if (event.button === 0) event.stopPropagation();
+                })
+                .on('click', function(event) {
+                    if (event.button !== 0) return;
+                    event.stopPropagation();
+                    handlePinClick(comp.id, i, comp.x + pin.x, comp.y + pin.y, this);
+                });
+        });
+
+        // 拖拽移动：明确排除引脚，避免点击引脚时被 d3.drag 抢占
+        const drag = d3.drag()
+            .filter(function(event) {
+                return event.button === 0 && !event.target.classList.contains('pin');
+            })
+            .on('start', function(event) {
+                event.sourceEvent.stopPropagation();
+            })
+            .on('drag', function(event) {
+                const t = d3.zoomTransform(svg.node());
+                comp.x += event.dx / t.k;
+                comp.y += event.dy / t.k;
+                d3.select(this).attr('transform', `translate(${comp.x}, ${comp.y})`);
+                updateWires();
+                updateTempWire();
+            });
+
+        g.call(drag);
+
+        // 点击元件主体：选中元件并打开属性面板
+        g.on('click', function(event) {
+            if (event.target.classList.contains('pin')) return;
+            event.stopPropagation();
+            selectComponent(comp.id);
+        });
+
+        // 初次渲染后也准备好选中框
+        if (selectedType === 'component' && selectedId === comp.id) {
+            g.classed('selected', true);
+            addSelectionFrame(g);
+        }
+    }
+
+    // ========== 引脚连线 ==========
+    function handlePinClick(compId, pinIndex, px, py, element) {
+        if (!wiringState) {
+            // 左键开始连线
+            wiringState = {
+                fromCompId: compId,
+                fromPinIndex: pinIndex,
+                fromX: px,
+                fromY: py
+            };
+
+            d3.select(element)
+                .classed('active', true)
+                .attr('fill', '#ff7043');
+
+            updateTempWire(px, py);
+            return;
+        }
+
+        // 再次点击同一个引脚 = 取消本次连线
+        if (wiringState.fromCompId === compId &&
+            wiringState.fromPinIndex === pinIndex) {
+            cancelWiring();
+            return;
+        }
+
+        // 完成连线
+        wires.push({
+            id: nextId++,
+            color: '#4fc3f7',
+            width: 2,
+            from: {
+                compId: wiringState.fromCompId,
+                pinIndex: wiringState.fromPinIndex
+            },
+            to: {
+                compId: compId,
+                pinIndex: pinIndex
+            }
+        });
+
+        cancelWiring();
+        updateWires();
+    }
+
+    // 鼠标移动时显示临时连线
+    function updateTempWire(mouseX, mouseY) {
+        if (!wiringState) return;
+
+        let line = tempWireLayer.select('.wire-temp');
+        if (line.empty()) {
+            line = tempWireLayer.append('line')
+                .attr('class', 'wire-temp');
+        }
+
+        line
+            .attr('x1', wiringState.fromX)
+            .attr('y1', wiringState.fromY)
+            .attr('x2', mouseX)
+            .attr('y2', mouseY);
+    }
+
+    // 统一的取消连线函数
+    function cancelWiring() {
+        wiringState = null;
+        tempWireLayer.selectAll('*').remove();
+        d3.selectAll('.pin.active')
+            .classed('active', false)
+            .attr('fill', null);
+    }
+
+    // ========== 更新连线 ==========
+    function updateWires() {
+        wireLayer.selectAll('*').remove();
+
+        wires.forEach(wire => {
+            const fromComp = components.find(c => c.id === wire.from.compId);
+            const toComp = components.find(c => c.id === wire.to.compId);
+            if (!fromComp || !toComp) return;
+
+            const fromDef = COMPONENT_DEFS[fromComp.type];
+            const toDef = COMPONENT_DEFS[toComp.type];
+            const fromPin = fromDef && fromDef.pins[wire.from.pinIndex];
+            const toPin = toDef && toDef.pins[wire.to.pinIndex];
+            if (!fromPin || !toPin) return;
+
+            const x1 = fromComp.x + fromPin.x;
+            const y1 = fromComp.y + fromPin.y;
+            const x2 = toComp.x + toPin.x;
+            const y2 = toComp.y + toPin.y;
+            const color = wire.color || '#4fc3f7';
+            const width = Number(wire.width) || 2;
+
+            // 实际显示线
+            wireLayer.append('line')
+                .attr('class', 'wire')
+                .attr('data-id', wire.id)
+                .attr('x1', x1).attr('y1', y1)
+                .attr('x2', x2).attr('y2', y2)
+                .style('stroke', color)
+                .style('stroke-width', `${width}px`)
+                .style('pointer-events', 'none');
+
+            // 透明粗命中区，负责鼠标交互
+            wireLayer.append('line')
+                .attr('class', 'wire-hit')
+                .attr('data-id', wire.id)
+                .attr('x1', x1).attr('y1', y1)
+                .attr('x2', x2).attr('y2', y2)
+                .style('cursor', 'pointer')
+                .on('mouseenter', function() {
+                    d3.select(this.parentNode)
+                        .select('.wire[data-id="' + wire.id + '"]')
+                        .classed('wire-hover', true);
+                })
+                .on('mouseleave', function() {
+                    d3.select(this.parentNode)
+                        .select('.wire[data-id="' + wire.id + '"]')
+                        .classed('wire-hover', false);
+                })
+                .on('click', function(event) {
+                    event.stopPropagation();
+                    selectWire(wire.id);
+                })
+                .on('contextmenu', function(event) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    deleteWire(wire.id);
+                });
+        });
+
+        // 命中区在可视线之后追加，但透明且只响应 stroke，不会遮挡元件 pin。
+    }
+
+    // ========== 选择、属性编辑、删除 ==========
+    // 注意：面板里的颜色/线宽是“草稿值”，只有点击“确认修改”才写入数据模型。
+    let draftColor = '#4fc3f7';
+    let draftWidth = 2;
+
+    function getSelectedObject() {
+        if (selectedType === 'component') {
+            return components.find(c => c.id === selectedId) || null;
+        }
+        if (selectedType === 'wire') {
+            return wires.find(w => w.id === selectedId) || null;
+        }
+        return null;
+    }
+
+    function refreshProperties() {
+        const panel = document.getElementById('properties');
+        const colorInput = document.getElementById('prop-color');
+        const colorValue = document.getElementById('prop-color-value');
+        const widthRow = document.getElementById('wire-width-row');
+        const applyButton = document.getElementById('apply-properties');
+
+        const obj = getSelectedObject();
+
+        if (!selectedType || selectedId == null || !obj) {
+            panel.classList.add('hidden');
+            return;
+        }
+
+        // 每次选择新对象，都从“已保存值”初始化草稿。
+        if (selectedType === 'component') {
+            document.getElementById('properties-title').textContent =
+                `${obj.label || COMPONENT_DEFS[obj.type]?.label || obj.type} #${selectedId}`;
+
+            draftColor = obj.color || '#4fc3f7';
+            draftWidth = 2;
+            widthRow.style.display = 'none';
+        } else {
+            document.getElementById('properties-title').textContent = `连线 #${selectedId}`;
+
+            draftColor = obj.color || '#4fc3f7';
+            draftWidth = Number(obj.width) || 2;
+            widthRow.style.display = 'flex';
+
+            document.getElementById('prop-width').value = draftWidth;
+            document.getElementById('prop-width-value').textContent = `${draftWidth} px`;
+        }
+
+        colorInput.value = draftColor;
+        colorValue.textContent = draftColor.toUpperCase();
+
+        // 重新选择对象时，确认按钮回到正常状态。
+        applyButton.disabled = false;
+        applyButton.textContent = '确认修改';
+        panel.classList.remove('hidden');
+    }
+
+    function clearSelection() {
+        selectedType = null;
+        selectedId = null;
+
+        d3.selectAll('.component.selected')
+            .classed('selected', false)
+            .selectAll('.selection-frame')
+            .remove();
+
+        d3.selectAll('.wire.selected')
+            .classed('selected', false);
+
+        refreshProperties();
+    }
+
+    function selectComponent(id) {
+        const comp = components.find(c => c.id === id);
+        if (!comp) return;
+
+        selectedType = 'component';
+        selectedId = id;
+
+        d3.selectAll('.component.selected')
+            .classed('selected', false)
+            .selectAll('.selection-frame')
+            .remove();
+
+        d3.selectAll('.wire.selected').classed('selected', false);
+
+        const g = d3.selectAll('.component')
+            .filter(function() {
+                return Number(this.dataset.id) === id;
+            })
+            .classed('selected', true);
+
+        g.each(function() {
+            addSelectionFrame(d3.select(this));
+        });
+
+        refreshProperties();
+    }
+
+    function selectWire(id) {
+        const wire = wires.find(w => w.id === id);
+        if (!wire) return;
+
+        selectedType = 'wire';
+        selectedId = id;
+
+        d3.selectAll('.component.selected')
+            .classed('selected', false)
+            .selectAll('.selection-frame')
+            .remove();
+
+        d3.selectAll('.wire.selected').classed('selected', false);
+
+        d3.selectAll('.wire')
+            .filter(function() {
+                return Number(this.dataset.id) === id;
+            })
+            .classed('selected', true);
+
+        refreshProperties();
+    }
+
+    // 只改变面板中的“草稿”，不改变画布。
+    document.getElementById('prop-color').addEventListener('input', function() {
+        draftColor = this.value;
+        document.getElementById('prop-color-value').textContent =
+            draftColor.toUpperCase();
+    });
+
+    document.getElementById('prop-width').addEventListener('input', function() {
+        draftWidth = Number(this.value);
+        document.getElementById('prop-width-value').textContent =
+            `${draftWidth} px`;
+    });
+
+    // 唯一的提交入口：用户点击“确认修改”后才真正修改数据和画布。
+    document.getElementById('apply-properties').addEventListener('click', function() {
+        const obj = getSelectedObject();
+        if (!obj) return;
+
+        if (selectedType === 'component') {
+            obj.color = draftColor;
+
+            const g = d3.selectAll('.component')
+                .filter(function() {
+                    return Number(this.dataset.id) === selectedId;
+                });
+
+            g.each(function() {
+                const node = d3.select(this);
+
+                // 使用 CSS style，而不是 SVG presentation attribute。
+                // .component-body 的 CSS class 会覆盖 .attr('stroke', ...)，
+                // 这是之前颜色修改“不生效”的根本原因。
+                applyComponentAppearance(node, obj.color);
+                node.classed('selected', true);
+                addSelectionFrame(node);
+            });
+        } else if (selectedType === 'wire') {
+            obj.color = draftColor;
+            obj.width = draftWidth;
+
+            // 重绘整条线，保证颜色和线宽来自已提交的数据模型。
+            updateWires();
+            d3.selectAll('.wire')
+                .filter(function() {
+                    return Number(this.dataset.id) === selectedId;
+                })
+                .classed('selected', true);
+        }
+
+        this.textContent = '已应用';
+        this.disabled = true;
+
+        // 短暂显示反馈，然后恢复按钮。
+        setTimeout(() => {
+            if (document.body.contains(this)) {
+                this.textContent = '确认修改';
+                this.disabled = false;
+            }
+        }, 700);
+    });
+
+    document.getElementById('delete-selected').addEventListener('click', deleteSelected);
+    document.getElementById('clear-selection').addEventListener('click', clearSelection);
+
+    function deleteSelected() {
+        if (selectedType === 'wire') {
+            deleteWire(selectedId);
+            return;
+        }
+
+        if (selectedType === 'component') {
+            const id = selectedId;
+            const index = components.findIndex(c => c.id === id);
+            if (index === -1) return;
+
+            // 删除元件的同时删除所有相连导线。
+            wires = wires.filter(w =>
+                w.from.compId !== id && w.to.compId !== id
+            );
+
+            components.splice(index, 1);
+            selectedType = null;
+            selectedId = null;
+
+            renderComponents();
+            updateWires();
+            refreshProperties();
+        }
+    }
+
+    // 鼠标移动：更新正在创建的临时连线
+    container.addEventListener('mousemove', (e) => {
+        if (!wiringState) return;
+
+        const transform = d3.zoomTransform(svg.node());
+        const rect = container.getBoundingClientRect();
+        const x = (e.clientX - rect.left - transform.x) / transform.k;
+        const y = (e.clientY - rect.top - transform.y) / transform.k;
+
+        updateTempWire(x, y);
+    });
+
+    // 右键：无论鼠标当前位于引脚、元件还是空白画布，都取消连线
+    container.addEventListener('contextmenu', (e) => {
+        if (wiringState) {
+            e.preventDefault();
+            e.stopPropagation();
+            cancelWiring();
+        }
+    });
+
+    // ESC 也可以取消连线
+    window.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && wiringState) {
+            cancelWiring();
+            return;
+        }
+
+        if ((e.key === 'Delete' || e.key === 'Backspace') &&
+            !['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) {
+            if (selectedType) {
+                e.preventDefault();
+                deleteSelected();
+            }
+        }
+    });
+
+    // ========== 删除已连接的线 ==========
+    function deleteWire(wireId) {
+        const index = wires.findIndex(w => w.id === wireId);
+        if (index === -1) return;
+
+        wires.splice(index, 1);
+        if (selectedType === 'wire' && selectedId === wireId) {
+            selectedType = null;
+            selectedId = null;
+            refreshProperties();
+        }
+        updateWires();
+    }
+
+    // 点击画布空白取消连线
+    container.addEventListener('click', (e) => {
+        if (e.target === document.getElementById('main-svg') || e.target === container) {
+            cancelWiring();
+            clearSelection();
+        }
+    });
+
+
+    // ========== JSON 导入 / 导出 ==========
+    function buildCircuitJson() {
+        return {
+            format: 'd3-digital-circuit-editor',
+            version: 1,
+            exportedAt: new Date().toISOString(),
+            nextId,
+            components: components.map(comp => ({
+                id: comp.id, type: comp.type, x: comp.x, y: comp.y,
+                color: comp.color || '#4fc3f7'
+            })),
+            wires: wires.map(wire => ({
+                id: wire.id,
+                color: wire.color || '#4fc3f7',
+                width: Number(wire.width) || 2,
+                from: { compId: wire.from.compId, pinIndex: wire.from.pinIndex },
+                to: { compId: wire.to.compId, pinIndex: wire.to.pinIndex }
+            }))
+        };
+    }
+
+    function exportJson() {
+        const json = JSON.stringify(buildCircuitJson(), null, 2);
+        const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        const now = new Date();
+        const pad = n => String(n).padStart(2, '0');
+        a.download =
+            `circuit_${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}_` +
+            `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.json`;
+        a.href = url;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+    }
+
+    function normalizeImportedCircuit(data) {
+        if (!data || typeof data !== 'object') throw new Error('JSON 根节点必须是对象');
+        if (!Array.isArray(data.components) || !Array.isArray(data.wires)) {
+            throw new Error('JSON 必须包含 components 和 wires 数组');
+        }
+
+        const importedComponents = data.components.map((comp, i) => {
+            const id = Number(comp.id), x = Number(comp.x), y = Number(comp.y);
+            if (!Number.isFinite(id) || !Number.isFinite(x) || !Number.isFinite(y)) {
+                throw new Error(`第 ${i + 1} 个元件的 id/x/y 无效`);
+            }
+            if (!COMPONENT_DEFS[comp.type]) throw new Error(`未知元件类型：${comp.type}`);
+            return {
+                id, type: comp.type, x, y,
+                color: typeof comp.color === 'string' ? comp.color : '#4fc3f7'
+            };
+        });
+
+        const compMap = new Map(importedComponents.map(c => [c.id, c]));
+        const importedWires = data.wires.map((wire, i) => {
+            const id = Number(wire.id);
+            const fromCompId = Number(wire?.from?.compId);
+            const fromPinIndex = Number(wire?.from?.pinIndex);
+            const toCompId = Number(wire?.to?.compId);
+            const toPinIndex = Number(wire?.to?.pinIndex);
+            const width = Number(wire.width);
+
+            if (!Number.isFinite(id) || !compMap.has(fromCompId) || !compMap.has(toCompId) ||
+                !Number.isInteger(fromPinIndex) || !Number.isInteger(toPinIndex)) {
+                throw new Error(`第 ${i + 1} 条连线的数据无效`);
+            }
+
+            const fromDef = COMPONENT_DEFS[compMap.get(fromCompId).type];
+            const toDef = COMPONENT_DEFS[compMap.get(toCompId).type];
+            if (!fromDef.pins[fromPinIndex] || !toDef.pins[toPinIndex]) {
+                throw new Error(`第 ${i + 1} 条连线的引脚索引无效`);
+            }
+
+            return {
+                id,
+                color: typeof wire.color === 'string' ? wire.color : '#4fc3f7',
+                width: Number.isFinite(width) ? Math.min(12, Math.max(1, width)) : 2,
+                from: { compId: fromCompId, pinIndex: fromPinIndex },
+                to: { compId: toCompId, pinIndex: toPinIndex }
+            };
+        });
+
+        const ids = [...importedComponents.map(c => c.id), ...importedWires.map(w => w.id)];
+        const maxId = ids.length ? Math.max(...ids) : 0;
+        const fileNextId = Number(data.nextId);
+
+        return {
+            components: importedComponents,
+            wires: importedWires,
+            nextId: Number.isFinite(fileNextId) ? Math.max(fileNextId, maxId + 1) : maxId + 1
+        };
+    }
+
+    function importJsonFile(file) {
+        if (!file) return;
+        const reader = new FileReader();
+
+        reader.onload = function() {
+            try {
+                const imported = normalizeImportedCircuit(JSON.parse(reader.result));
+
+                cancelWiring();
+                selectedType = null;
+                selectedId = null;
+                components = imported.components;
+                wires = imported.wires;
+                nextId = imported.nextId;
+
+                renderComponents();
+                updateWires();
+                refreshProperties();
+
+                alert(`导入成功！\n元件：${components.length} 个\n连线：${wires.length} 条`);
+            } catch (error) {
+                console.error('JSON 导入失败:', error);
+                alert(`JSON 导入失败：${error.message || error}`);
+            }
+        };
+
+        reader.onerror = () => alert('无法读取 JSON 文件');
+        reader.readAsText(file, 'utf-8');
+    }
+
+    document.getElementById('export-json').addEventListener('click', exportJson);
+
+    document.getElementById('import-json').addEventListener('click', function() {
+        const input = document.getElementById('json-file-input');
+        input.value = '';
+        input.click();
+    });
+
+    document.getElementById('json-file-input').addEventListener('change', function(event) {
+        importJsonFile(event.target.files[0]);
+    });
+
+    // 清空整个画布
+    document.getElementById('clear-canvas').addEventListener('click', function() {
+        if (components.length === 0 && wires.length === 0) {
+            return;
+        }
+
+        const confirmed = confirm(
+            `确定要清空画布吗？\n\n将删除 ${components.length} 个元件和 ${wires.length} 条连线。\n此操作不可恢复。`
+        );
+
+        if (!confirmed) return;
+
+        cancelWiring();
+        selectedType = null;
+        selectedId = null;
+
+        components = [];
+        wires = [];
+        nextId = 1;
+
+        renderComponents();
+        updateWires();
+        refreshProperties();
+    });
+
+    // 初始状态
+    renderComponents();
+    updateWires();
+    refreshProperties();
+</script>
+</body>
+</html>
